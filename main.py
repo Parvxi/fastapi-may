@@ -1,10 +1,10 @@
+import signal
 import threading
 from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-import numpy as np
 from pydantic import BaseModel
 from typing import Annotated
-
 import uvicorn
 from OSC_Receiver_Simple import EEGProcessor
 import models as models
@@ -63,23 +63,55 @@ async def get_history_result(item_id: int, db: Session = db_dependency):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History item not found")
     return history_item.result
 
-eeg_processor = EEGProcessor(featureObj, predic_obj)
+import threading
+import time
+def run_eeg_processor(dispatcher):
+    ip = "0.0.0.0"
+    port = 5000
+
+    # Initialize your featureObj and predic objects
+    featureObj = FE()
+    predic_obj = predic()
+
+    eeg_processor = EEGProcessor(featureObj, predic_obj)
+
+    dispatcher.map("/muse/eeg", eeg_processor.on_new_eeg_data)
+
+    server = osc_server.ThreadingOSCUDPServer((ip, port), dispatcher)
+    print("Listening on UDP port " + str(port))
+
+    def stop_server():
+        """
+        Function to stop the server
+        """
+        print("Stopping server...")
+        server.shutdown()
+        server.server_close()
+
+    # Set a timer to stop the server after 30 seconds
+    timer = threading.Timer(30, stop_server)
+    timer.start()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        timer.cancel()  # Cancel the timer
+        # Insert last prediction into the database
+        if eeg_processor.last_prediction is not None:
+            eeg_processor.insert_prediction_to_db(eeg_processor.last_prediction)
+
+    print("Script finished running")
+
 
 @app.post("/start_eeg_processing")
-def start_eeg_processing():
-    try:
-        eeg_processor.start_processing()
-        return {"message": "EEG processing started"}
-    except Exception as e:
-        return {"error": str(e)}
+async def trigger_eeg_processor():
+    dispatcher_obj = dispatcher.Dispatcher()
+    threading.Thread(target=run_eeg_processor, args=(dispatcher_obj,)).start()
+    return JSONResponse(content={"message": "EEG processor started"})
 
-@app.post("/stop_eeg_processing")
-def stop_eeg_processing():
-    try:
-        eeg_processor.stop_server(None, None)
-        return {"message": "EEG processing stopped"}
-    except Exception as e:
-        return {"error": str(e)}
 
-# Call the function to start the EEG processing
-start_eeg_processing()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)

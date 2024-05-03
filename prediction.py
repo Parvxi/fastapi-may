@@ -42,8 +42,10 @@ class predic():
         pred1 = np.argmax(pred, axis=1)
         print("The prediction after argmax: ", pred1)
         # encoding
-        label_dict= {0:'POSITIVE', 1:'NEUTRAL', 2:'NEGATIVE'}
+        label_dict= {0:'NEGATIVE', 1:'NEUTRAL', 2:'POSITIVE'}
         prediction = label_dict[int(pred1)]
         print("The final prediction: ", prediction)
         return prediction
         
+
+#Encoded value 0 corresponds to 'NEGATIVE', Encoded value 1 corresponds to 'NEUTRAL', Encoded value 2 corresponds to 'POSITIVE'

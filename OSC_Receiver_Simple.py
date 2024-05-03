@@ -1,11 +1,14 @@
+import random
 import signal
 from datetime import datetime
 import threading
+from typing import Counter
+import uuid
 import numpy as np
 from pythonosc import dispatcher, osc_server
+import requests
 from FE import FE  # Assuming FE is your feature extraction class
 from prediction import predic  # Assuming prediction is your prediction function
-import mysql.connector  # For database connection
 
 class EEGProcessor:
     def __init__(self, featureObj, predic, batch_size=30, buffer_size=100):
@@ -14,7 +17,8 @@ class EEGProcessor:
         self.predic = predic
         self.batch_size = batch_size
         self.buffer_size = buffer_size
-        self.last_prediction = None  # Variable to store the last prediction
+        self.last_prediction = None
+        self.prediction_history = []
 
     def on_new_eeg_data(self, address: str, *args):
         """
@@ -36,6 +40,7 @@ class EEGProcessor:
         """
         Process the data in the buffer
         """
+        self.prediction_history = []
         data_batch = np.array(self.buffer[:self.batch_size])
         ret, feat_names = self.featureObj.generate_feature_vectors_from_samples(np.array(self.buffer), 150, 1., cols_to_ignore=-1)
         ret_2d = ret.reshape(1, -1)
@@ -43,41 +48,77 @@ class EEGProcessor:
 
         print("prediction:", prediction)
         self.last_prediction = prediction
+        print("Last Prediction:", self.last_prediction)
+        if self.last_prediction is not None:
+            self.prediction_history.append(self.last_prediction)
 
-        del self.buffer[:self.batch_size]
+        self.buffer = []
+
+    def insert_most_common_prediction_to_db(self):
+        """
+        Insert the most common prediction into the eegsession table
+        """
+        most_common_prediction = None
+        if self.prediction_history:
+            prediction_counter = Counter(self.prediction_history)
+            most_common_prediction, _ = prediction_counter.most_common(1)[0]
+
+        if most_common_prediction is not None:
+            print("Calling insert_prediction_to_db with prediction:", most_common_prediction)
+            self.insert_prediction_to_db(most_common_prediction)
 
     def insert_prediction_to_db(self, prediction):
         """
         Insert the prediction into the eegsession table
         """
-        # Define your database connection details (replace with yours)
-        username = "root"
-        password = ""
-        hostname = "localhost"
-        database = "Sukoon"
 
-        connection = mysql.connector.connect(
-            user=username, password=password, host=hostname, database=database
-        )
-        cursor = connection.cursor()
+        print("Function Called")
 
+        patient_ID, role = self.fetch_patient_information()
+        min_value = 100
+        max_value = 999
+        SessionID = random.randint(min_value, max_value)
         # Get current timestamp
         dateTimeObj = datetime.now()
         timestamp = dateTimeObj.strftime("%Y-%m-%d %H:%M:%S.%f")
 
-        sql = "INSERT INTO eegsession (SessionID, HeadbandID, Duration, Result, Timestamp, patient_ID, doctor_ID) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-        # Fill data based on your logic (replace with appropriate values)
-        data = (1, 1212, "hamza", prediction, timestamp, 1, 1212)  # Modify these values as needed
-        cursor.execute(sql, data)
+        urlSession = "https://infinite-wave-71025-404d3d4feff8.herokuapp.com/api/addSession"
+        data = {
+            "HeadbandID": 105,
+            "Duration": 30,
+            "Result": prediction,
+            "Timestamp": timestamp,
+            "patient_ID": patient_ID,
+            "doctor_ID": None
+        }
 
-        connection.commit()
-        cursor.close()
-        connection.close()
+        print("Request Body:", data)
+        response = requests.post(urlSession, json=data)
+
+        print("Status Code:", response.status_code)
+        if response.status_code == 200:
+            print("Data inserted successfully")
+        else:
+            print("Data Error:", response.text)
+
+    def fetch_patient_information(self):
+        url = "https://infinite-wave-71025-404d3d4feff8.herokuapp.com/api/listRole"
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            data = response.json()
+            SessionID = data[0]["id"]
+            patient_ID = data[0]["patient_ID"]
+            role = data[0]["Role"]
+            print("Request Body:", data)
+            return patient_ID, role
+        return None, None
 
 def stop_server(signum, frame):
     """
     Signal handler for stopping the server
     """
+    print("Script finished running")
     raise KeyboardInterrupt
 
 if __name__ == "__main__":
@@ -106,15 +147,14 @@ if __name__ == "__main__":
         server_thread.join()
     except KeyboardInterrupt:
         pass
-    except:
-        pass
+    except Exception as e:
+        print("Error:", e)
     finally:
         signal.alarm(0)  # Disable the alarm
 
         server.server_close()
 
-        # Insert last prediction into the database
-        if eeg_processor.last_prediction is not None:
-            eeg_processor.insert_prediction_to_db(eeg_processor.last_prediction)
+        # Insert most common prediction into the database
+        eeg_processor.insert_most_common_prediction_to_db()
 
     print("Script finished running")
